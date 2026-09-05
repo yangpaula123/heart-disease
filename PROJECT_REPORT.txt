@@ -1,0 +1,590 @@
+心脏病二分类建模项目报告
+==========================
+
+一、项目目标
+------------
+本项目使用 Cleveland heart disease 数据，建立一个二分类模型：
+
+    target = 0：num 等于 0，表示没有心脏病
+    target = 1：num 大于 0，表示有心脏病
+
+项目目标不是只训练一个模型，而是完整经历：
+
+    数据理解
+    -> 缺失值分析和处理
+    -> 训练集/测试集划分
+    -> 特征预处理
+    -> 多模型五折交叉验证
+    -> 根据 ROC-AUC 选择模型和参数
+    -> 全部训练集重新拟合
+    -> 测试集最终评价
+    -> ROC、校准、DCA 图
+    -> SHAP 可解释性分析
+
+
+二、项目结构
+------------
+当前项目的主要结构如下：
+
+    heart+disease/
+    |
+    |-- data/raw/
+    |   |-- processed.cleveland.data
+    |   `-- heart-disease.names
+    |
+    |-- src/
+    |   |-- understanding.py
+    |   `-- heart_disease/
+    |       |-- __init__.py
+    |       |-- config.py
+    |       |-- data.py
+    |       |-- preprocessing.py
+    |       |-- models.py
+    |       |-- model_selection.py
+    |       |-- evaluation.py
+    |       `-- explainability.py
+    |
+    |-- run_analysis.py
+    |-- requirements.txt
+    |-- README.md
+    |-- PROJECT_REPORT.txt
+    |-- tests/test_pipeline.py
+    |-- figure/
+    `-- results/
+
+各文件的职责：
+
+1. understanding.py
+   用于探索性数据分析，包括数据描述、缺失值分析、连续变量分析、
+   分类变量分析、统计检验和可视化。
+
+2. config.py
+   保存公共配置，包括数据路径、列名、变量分组、图形目录和结果目录。
+
+3. data.py
+   负责读取原始数据、构造 target、分离 X 和 y、分层划分训练集和测试集。
+
+4. preprocessing.py
+   负责缺失值检查、删除缺失样本、预处理后质量检查，以及不同模型使用的
+   编码和标准化流程。
+
+5. models.py
+   定义四种候选模型及其 Pipeline：逻辑回归、L1 逻辑回归、随机森林和 XGBoost。
+
+6. model_selection.py
+   负责训练集上的五折交叉验证和参数搜索。
+
+7. evaluation.py
+   负责最终测试集评价，包括 AUC、95% CI、Brier score、校准指标、分类指标
+   和 DCA。
+
+8. explainability.py
+   负责最终 Logistic Regression 的 SHAP 解释和三类 SHAP 图。
+
+9. run_analysis.py
+   作为统一运行入口，串联完整分析流程。
+
+
+三、第一阶段：数据读取
+----------------------
+原始数据没有列名，因此使用 config.py 中的 COLUMNS 手动指定列名。
+
+读取时使用：
+
+    header=None
+    names=COLUMNS
+    na_values="?"
+
+其中 na_values="?" 很重要，因为原始文件用问号表示缺失值。读取后，问号会被
+转换为 pandas 的 NaN，后续才能使用 isna() 等方法分析。
+
+读取结果：
+
+    原始数据行数：303
+    原始特征列数量：14
+
+原始的 14 列包括 13 个预测变量和原始结果变量 num。
+
+
+四、第二阶段：构造二分类目标
+----------------------------
+原始变量 num 表示疾病程度，可能取 0、1、2、3、4。当前项目将它转换为二分类：
+
+    data["target"] = (data["num"] > 0).astype(int)
+
+这样做的原因是本项目的目标是预测“是否患病”，而不是预测疾病严重程度。
+
+转换后：
+
+    target = 0：164 条
+    target = 1：139 条
+
+原始 num 列仍然保留在数据中，但在 split_features_target() 中会从 X 中删除，
+避免原始结果变量泄漏进模型。
+
+
+五、第三阶段：探索性分析
+------------------------
+understanding.py 的作用是探索数据，而不是正式训练模型。它现在被函数化，并且
+可以通过参数只运行某一个模块：
+
+    python src/understanding.py
+    python src/understanding.py --analysis missing
+    python src/understanding.py --analysis continuous
+    python src/understanding.py --analysis categorical
+    python src/understanding.py --analysis chi2
+    python src/understanding.py --analysis all
+
+为什么要单独保留 understanding.py？
+
+因为探索性分析和建模流程的职责不同：
+
+    understanding.py：了解数据、发现问题、形成处理方案
+    data.py：正式提供数据读取和数据划分函数
+    preprocessing.py：正式处理进入模型的数据
+
+之前 understanding.py 中重复写了 pd.read_csv()、列名、target 构造和变量分组。
+后来将重复的数据读取和 target 构造移动到 data.py，将变量分组移动到 config.py，
+understanding.py 改为调用这些模块。
+
+探索性分析包括：
+
+1. 数据形状、数据类型和描述统计
+2. 缺失值数量和比例
+3. 含缺失值的变量和样本
+4. 缺失模式
+5. 缺失情况与 target 的关系
+6. 缺失情况与连续变量、分类变量的关系
+7. 连续变量按 target 分组的描述统计
+8. 直方图
+9. Welch t 检验
+10. Mann-Whitney U 检验
+11. 分类变量频数和比例
+12. 卡方检验
+
+
+六、第四阶段：缺失值处理方案讨论
+--------------------------------
+原始数据中的缺失主要出现在：
+
+    ca：4 个
+    thal：2 个
+    总计：6 个
+
+整体缺失比例较低，因此最终选择完整案例删除法，而不是插补。
+
+讨论过的方案：
+
+1. 连续变量用中位数插补
+2. 分类变量用众数插补
+3. 使用 sklearn SimpleImputer
+4. 删除包含缺失值的样本
+
+最终选择删除的理由：
+
+    缺失值数量少
+    删除的样本比例低
+    不需要额外引入插补值假设
+    当前数据规模下实现简单、解释直观
+
+但需要注意：删除样本不是永远最优。如果缺失比例较高，或者缺失不是随机的，
+删除可能造成样本量损失和选择偏倚。当前选择依赖于本数据中缺失值比例较低。
+
+重要的流程讨论：
+
+最初曾考虑在划分数据集之前删除缺失值，后来根据“先在训练集观察缺失情况，再决定
+建模处理方法”的思路，改为：
+
+    读取数据
+    -> 构造 target
+    -> 分离 X、y
+    -> 先按 target 分层划分训练集和测试集
+    -> 检查训练集缺失值
+    -> 确定删除策略
+    -> 对训练集和测试集执行相同删除规则
+
+最终训练集和测试集结果：
+
+    原始训练集：242 条
+    删除缺失后的训练集：240 条
+
+    原始测试集：61 条
+    删除缺失后的测试集：57 条
+
+删除时同时筛选 features 和 target，保证 X 和 y 行索引保持对齐。
+
+
+七、第五阶段：训练集和测试集划分
+--------------------------------
+使用 8:2 划分：
+
+    test_size=0.2
+    random_state=42
+    stratify=y
+
+使用 stratify 的原因是保持训练集和测试集的 target 类别比例相近，避免某一部分
+类别比例异常。
+
+划分后再删除缺失样本，因此删除操作会使训练集和测试集的 target 比例产生轻微变化。
+这是正常的，但必须在报告中说明。
+
+测试集从划分开始就不能参与：
+
+    参数搜索
+    模型选择
+    预处理器拟合
+    阈值选择
+    SHAP 背景数据构造
+
+
+八、第六阶段：变量分组和预处理方案
+------------------------------------
+当前变量分组如下：
+
+连续变量：
+
+    age
+    trestbps
+    chol
+    thalach
+    oldpeak
+
+二分类变量：
+
+    sex
+    fbs
+    exang
+
+计数型变量：
+
+    ca
+
+多分类变量：
+
+    cp
+    restecg
+    slope
+    thal
+
+预处理方案是根据变量含义和模型特点决定的。
+
+1. 二分类变量
+   保留原始 0/1，不需要 One-Hot。
+
+2. ca
+   保留数值形式。ca 表示主要血管数量，具有数量和顺序含义，因此保留数值是
+   可以解释的。但这隐含了从 0 到 1、从 1 到 2 的影响近似线性的假设。
+
+3. 多分类变量
+   使用 One-Hot 编码。因为 cp、restecg、slope、thal 的数字编码代表类别，
+   不应直接解释为连续大小。
+
+4. 连续变量
+   逻辑回归使用 StandardScaler 标准化。
+   树模型不需要标准化，因为树模型按切分阈值工作，对尺度不敏感。
+
+预处理和模型放在同一个 Pipeline 中。原因是交叉验证的每一折都必须只用该折的
+训练部分拟合编码器和标准化器，不能提前用完整训练集拟合，否则会产生数据泄漏。
+
+
+九、第七阶段：四种候选模型
+----------------------------
+四个模型的选择理由如下：
+
+1. Logistic Regression
+   作为线性基准模型，解释性较强，适合观察变量与风险之间的线性关系。
+
+2. L1 Logistic Regression
+   是带 L1 正则化的 Logistic Regression，也可以称为 Lasso Logistic Regression。
+   它可以将部分特征系数压缩到 0，具有一定特征选择作用。
+
+3. Random Forest
+   是 Bagging 集成树模型，可以捕捉非线性关系和变量交互，不需要标准化。
+
+4. XGBoost
+   是 Boosting 集成树模型，通常具有较强的非线性拟合能力，但参数更多，
+   也更容易在小样本数据上过拟合。
+
+注意：本项目的 target 是二分类，因此 Lasso 实际上是 L1 正则化 Logistic Regression，
+不是普通的线性回归 Linear Regression。
+
+
+十、第八阶段：五折交叉验证和参数搜索
+--------------------------------------
+使用：
+
+    StratifiedKFold(
+        n_splits=5,
+        shuffle=True,
+        random_state=42,
+    )
+
+每一折都执行：
+
+    4/5 折作为折内训练集
+    1/5 折作为验证集
+    只用折内训练集拟合 Pipeline
+    使用同一个 Pipeline 转换验证集
+    计算验证集 AUC 和 Brier score
+
+因此每一折都会重新拟合 One-Hot 编码器和标准化器，这可以避免交叉验证中的信息泄漏。
+
+模型和参数选择的主要指标是平均 ROC-AUC，Brier score 作为辅助指标记录。
+
+AUC 越高越好，表示区分能力越强。
+Brier score 越低越好，表示预测概率误差越小。
+
+当前参数范围：
+
+1. Logistic Regression
+   不调参，作为基准模型，使用固定参数。
+
+2. L1 Logistic Regression
+
+       C = [0.01, 0.1, 1, 10, 100]
+
+3. Random Forest
+
+       n_estimators = [200, 500]
+       max_depth = [None, 5, 10]
+       min_samples_leaf = [1, 2]
+
+   共 12 组参数。
+
+4. XGBoost
+
+       n_estimators = [100, 200, 400]
+       max_depth = [2, 3, 4]
+       learning_rate = [0.03, 0.1]
+
+   共 18 组参数。
+
+参数搜索使用 GridSearchCV，并设置 refit=False。这样参数搜索不会偷偷在全部训练集
+上自动重训，最终重训步骤由代码明确完成。
+
+
+十一、第九阶段：模型比较结果
+------------------------------
+当前 results/model_comparison.csv 的结果如下：
+
+模型                         平均 AUC    AUC 标准差    平均 Brier    Brier 标准差
+Logistic Regression          0.9053      0.0302        0.1196        0.0199
+Random Forest                0.9036      0.0297        0.1304        0.0171
+L1 Logistic Regression       0.9004      0.0297        0.1243        0.0179
+XGBoost                     0.8894      0.0235        0.1405        0.0153
+
+最佳参数：
+
+L1 Logistic Regression：C=1
+Random Forest：n_estimators=500, max_depth=5, min_samples_leaf=2
+XGBoost：n_estimators=100, max_depth=2, learning_rate=0.03
+
+当前选择标准是先按照 AUC 选择最佳参数。Brier score 用于辅助比较概率质量。
+当前标准 Logistic Regression 的 AUC 最高，Brier score 也最低，因此最终选择它作为最终模型。
+
+这里不能把交叉验证结果当作独立测试结果。它只用于训练集内部的模型和参数选择。
+
+
+十二、第十阶段：全部训练集重新拟合
+----------------------------------
+选定标准 Logistic Regression 后，使用全部清理后的训练集重新拟合完整 Pipeline：
+
+    X_train：240 条
+    y_train：240 条
+
+拟合过程包括：
+
+    训练集上的 One-Hot 编码器拟合
+    训练集上的 StandardScaler 拟合
+    Logistic Regression 拟合
+
+测试集只会使用已经拟合好的 Pipeline 进行 transform 和 predict，不会再次 fit。
+
+
+十三、第十一阶段：测试集预测和最终评价
+----------------------------------------
+最终测试集共有 57 条样本。模型先生成：
+
+    predict_proba()：预测为 target=1 的概率
+    predict()：默认阈值 0.5 下的类别预测
+
+当前测试集结果：
+
+    ROC-AUC：0.9569
+    ROC-AUC 95% CI：(0.8916, 0.9973)
+    Sensitivity：0.9286
+    Specificity：0.8276
+    PPV：0.8387
+    NPV：0.9231
+    Brier score：0.0850
+
+混淆矩阵：
+
+    TN=24
+    FP=5
+    FN=2
+    TP=26
+
+校准结果：
+
+    校准截距：-0.6021
+    校准斜率：1.2214
+
+校准截距的理想值接近 0，校准斜率的理想值接近 1。当前结果可以作为探索性结果，
+不能仅凭 57 个测试样本做强结论。
+
+分类指标的 bootstrap 95% CI：
+
+    Sensitivity：(0.8158, 1.0000)
+    Specificity：(0.6857, 0.9583)
+    PPV：(0.7000, 0.9615)
+    NPV：(0.8000, 1.0000)
+
+AUC 和分类指标的置信区间使用测试集 bootstrap 计算，bootstrap 次数为 2000。
+
+
+十四、第十二阶段：三类最终评价图
+----------------------------------
+图形保存在 figure/ 文件夹中：
+
+1. roc_curve.png
+   展示模型的区分能力，并标出 AUC。
+
+2. calibration_curve.png
+   横轴是平均预测概率，纵轴是实际阳性比例，并包含理想校准线。
+   当前测试集较小，因此使用 5 个分箱。
+
+3. decision_curve.png
+   展示模型、Treat all 和 Treat none 在不同阈值概率下的净获益。
+   当前 DCA 阈值范围为 0.05 到 0.80。
+
+DCA 的阈值范围应结合实际应用场景解释，不能为了曲线效果事后选择范围。
+
+
+十五、第十三阶段：SHAP 可解释性分析
+------------------------------------
+SHAP 只解释最终确定的 Logistic Regression，不用于重新选择模型或参数。
+
+解释流程：
+
+    训练集作为背景数据
+    测试集作为被解释数据
+    使用已拟合 Pipeline 的预处理器转换数据
+    使用 SHAP LinearExplainer 计算线性模型 SHAP 值
+
+选择 LinearExplainer 的原因：
+
+    Logistic Regression 是线性模型
+    计算速度快
+    结果稳定
+    SHAP 值容易和模型系数及 log-odds 联系起来
+
+SHAP 结果首先在 One-Hot 后的特征空间产生。为了更容易写报告，代码又把：
+
+    cp_1、cp_2、cp_3、cp_4 -> cp
+    restecg 的 One-Hot 列 -> restecg
+    slope 的 One-Hot 列 -> slope
+    thal 的 One-Hot 列 -> thal
+
+将同一原始变量的 SHAP 值汇总，之后生成三张图：
+
+1. shap_global_importance.png
+   全局平均绝对 SHAP 值重要性图。
+
+2. shap_directional_summary.png
+   beeswarm 方向性图，展示特征值高低和风险方向。
+
+3. shap_individual_sample_0.png
+   测试集第一个样本的 waterfall 个体解释图。
+
+SHAP 的解释是模型关联解释，不代表医学因果关系。
+
+
+十六、期间主要修改过程
+----------------------
+1. 最初所有代码都集中在 understanding.py，包含读取、统计、绘图和检验。
+2. 建立 src/heart_disease 包，将数据读取、配置、预处理、模型、评价、解释分开。
+3. 将路径和列名集中到 config.py，避免多个文件重复定义。
+4. 将二分类 target 构造放到 data.py，而不是放在 understanding.py 中。
+5. 将 X、y 分离和 8:2 分层划分放到 data.py。
+6. 把 understanding.py 改造成多个函数，并增加 --analysis 参数控制模块运行。
+7. 先检查训练集缺失值，再决定删除缺失样本，而不是提前对全数据盲目处理。
+8. 将缺失值处理限定为完整案例删除，并保持 X、y 对齐。
+9. 最初曾提前实现编码、标准化和模型训练，后来按照学习节奏删除入口中的提前训练，
+   先单独讨论编码方案。
+10. 确定二分类保留 0/1、ca 保留数值、多分类 One-Hot、逻辑回归标准化、树模型不标准化。
+11. 先完成逻辑回归五折交叉验证，再完成 L1、随机森林和 XGBoost 的参数搜索。
+12. 将 Brier score 加入交叉验证作为辅助指标，但保持 AUC 为主要选择指标。
+13. 用全部训练集重新拟合最终 Logistic Regression。
+14. 增加测试集 AUC、95% CI、分类指标、Brier、校准和 DCA。
+15. 增加 SHAP 三类图，并将图统一保存到 figure/。
+16. 最后补充四模型结果 CSV、SHAP 原始变量聚合、README 和基础测试。
+
+
+十七、当前需要注意的限制和后续改进
+------------------------------------
+1. 测试集只有 57 条样本，所有最终测试结果都可能不稳定，应作为探索性验证。
+
+2. 当前测试集删除缺失样本是在划分之后执行的，符合“根据训练集缺失情况决定策略”的项目思路；
+   但删除操作会改变测试集的样本构成，因此报告中需要说明最终测试集实际有 57 条。
+
+3. 当前模型选择结果保存了 AUC 和 Brier，但自动选择规则主要是平均 AUC 最大。
+   如果报告要严格采用“AUC 差异不超过 0.005 时比较 Brier”，应把这个规则显式写入代码。
+
+4. 当前最终模型是标准 Logistic Regression，因为它在交叉验证中 AUC 最高且 Brier 最低。
+   不能因为测试集结果更好就重新更换模型，否则会造成测试集选择偏倚。
+
+5. SHAP 的 One-Hot 聚合是为了报告可读性。聚合后的贡献应理解为同一原始变量编码列的
+   汇总贡献，不应误认为重新训练了一个只含原始变量的模型。
+
+6. DCA 的阈值范围 0.05 到 0.80 需要结合实际场景说明。
+
+7. 还可以进一步增加外部验证、重复交叉验证、概率校准方法比较和更大独立测试集。
+
+8. 可以继续添加 .gitignore，排除 __pycache__/、*.pyc 和临时文件。
+
+
+十八、如何运行项目
+------------------
+安装依赖：
+
+    python -m pip install -r requirements.txt
+
+运行完整流程：
+
+    python run_analysis.py
+
+运行探索性分析的指定模块：
+
+    python src/understanding.py --analysis missing
+    python src/understanding.py --analysis continuous
+    python src/understanding.py --analysis categorical
+    python src/understanding.py --analysis chi2
+
+运行测试：
+
+    python -m unittest discover -s tests -v
+
+运行后查看：
+
+    figure/model evaluation and SHAP plots
+    results/model_comparison.csv
+
+
+十九、最终总结
+--------------
+本项目最终采用的核心方案是：
+
+    target 分层 8:2 划分
+    -> 根据训练集缺失情况决定完整案例删除
+    -> 训练集五折分层交叉验证
+    -> AUC 作为主要选择指标，Brier 作为辅助指标
+    -> 比较 Logistic、L1 Logistic、Random Forest、XGBoost
+    -> 选择标准 Logistic Regression
+    -> 用全部清理后的训练集重新拟合
+    -> 测试集进行最终区分、分类、校准和 DCA 评价
+    -> 使用 SHAP 解释最终 Logistic Regression
+
+当前流程已经可以完整运行，并且基础测试通过。报告解读时应同时强调：
+
+    当前结果是单次数据划分和小测试集上的探索性结果，不能直接等同于临床验证结论。

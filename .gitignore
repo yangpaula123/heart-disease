@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 打包 / 分发
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+.conda/
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 测试 / 缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# 运行脚本生成的输出（运行 python run_analysis.py 可重新生成）
+results/
+
+# 日志
+*.log
+
+# 操作系统
+.DS_Store
+Thumbs.db
