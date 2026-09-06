@@ -2,7 +2,7 @@
 
 基于 [UCI Cleveland Heart Disease](https://archive.ics.uci.edu/dataset/45/heart+disease) 数据集的二分类建模项目，完整经历以下流程：
 
-> 数据理解 → 缺失值处理 → 分层划分 → 多模型五折交叉验证 → 模型选择 → 测试集最终评价（区分度、校准、决策曲线）→ SHAP 可解释性分析
+> 数据理解 → 缺失值处理 → 分层划分 → 多模型五折交叉验证 → 模型选择 → bootstrap内部验证 → 测试集最终评价（区分度、校准、决策曲线）→ SHAP 可解释性分析
 
 ## 数据集
 
