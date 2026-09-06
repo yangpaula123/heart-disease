@@ -17,6 +17,7 @@
     -> 多模型五折交叉验证
     -> 根据 ROC-AUC 选择模型和参数
     -> 全部训练集重新拟合
+    -> 训练集 Bootstrap 乐观校正内部验证
     -> 测试集最终评价
     -> ROC、校准、DCA 图
     -> SHAP 可解释性分析
@@ -41,6 +42,7 @@
     |       |-- preprocessing.py
     |       |-- models.py
     |       |-- model_selection.py
+    |       |-- bootstrap_validation.py
     |       |-- evaluation.py
     |       `-- explainability.py
     |
@@ -48,7 +50,9 @@
     |-- requirements.txt
     |-- README.md
     |-- PROJECT_REPORT.txt
-    |-- tests/test_pipeline.py
+    |-- tests/
+    |   |-- test_pipeline.py
+    |   `-- test_bootstrap_validation.py
     |-- figure/
     `-- results/
 
@@ -74,14 +78,18 @@
 6. model_selection.py
    负责训练集上的五折交叉验证和参数搜索。
 
-7. evaluation.py
+7. bootstrap_validation.py
+   负责训练集上的 Bootstrap 乐观校正内部验证（Harrell 方法），估计 AUC、
+   Brier、校准斜率与截距的乐观性，并绘制乐观性分布图。
+
+8. evaluation.py
    负责最终测试集评价，包括 AUC、95% CI、Brier score、校准指标、分类指标
    和 DCA。
 
-8. explainability.py
+9. explainability.py
    负责最终 Logistic Regression 的 SHAP 解释和三类 SHAP 图。
 
-9. run_analysis.py
+10. run_analysis.py
    作为统一运行入口，串联完整分析流程。
 
 
@@ -401,7 +409,61 @@ XGBoost：n_estimators=100, max_depth=2, learning_rate=0.03
 测试集只会使用已经拟合好的 Pipeline 进行 transform 和 predict，不会再次 fit。
 
 
-十三、第十一阶段：测试集预测和最终评价
+十三、第十一阶段：Bootstrap 乐观校正内部验证
+--------------------------------------------
+在训练集（240 例）上对最终 Logistic Regression 做 1000 次 bootstrap 乐观校正
+（Efron 1983 / Harrell 1996）：
+
+    每次重抽样（有放回抽取 240 条）
+    -> 用 clone 得到未拟合的同一 Pipeline（含 One-Hot 和标准化）
+    -> 在 bootstrap 样本上重新拟合
+    -> 计算表观表现（在 bootstrap 样本本身上评估）
+    -> 计算检验表现（在原始全样本上评估）
+    -> 本次乐观性 = 表观 - 检验
+
+    校正值 = 全样本表观 - 平均乐观性
+
+测试集全程保持独立，不参与任何一次重抽样。
+
+结果：
+
+    指标        表观      平均乐观性   校正后    95% CI（近似）
+    ROC-AUC     0.9288    0.0263      0.9025    (0.9038, 0.9253)
+    Brier       0.1024    -0.0216     0.1241    (0.1036, 0.1227)
+    校准斜率    1.1217    0.2660      0.8558    (0.7264, 1.1558)
+    校准截距    0.0408    0.0830      -0.0422   (-0.3777, 0.3669)
+
+    有效重抽样次数：1000 / 1000
+
+解读：
+
+1. 校正后 AUC 0.9025 与五折交叉验证均值 0.9053 非常接近，两种内部验证方法
+   （交叉验证与 bootstrap 乐观校正）互相印证。
+
+2. 校正后校准斜率 0.8558，提示约 14% 的收缩量。最终模型有 18 个参数、
+   EPV 约 7.7，斜率收缩方向与过拟合预期一致。
+
+3. 表观斜率 1.1217 大于 1，原因是 LogisticRegression 默认 C=1 带 L2 惩罚，
+   系数被压缩后预测概率欠分散。无惩罚 MLE 逻辑回归的表观斜率恒为 1
+   （得分方程的直接推论），单元测试用 C=1e6 验证了这一性质。
+
+4. Brier 的平均乐观性为负（-0.0216），说明惩罚下模型在重抽样样本上的表观
+   Brier 并不优于原始全样本；校正值 0.1241 与交叉验证均值 0.1196 接近。
+
+5. 本次校正只覆盖模型拟合过程（预处理 + 拟合），模型选择（四选一）本身的
+   乐观性未纳入，作为局限声明。
+
+6. 校正值的 95% CI 用各次重抽样检验表现的百分位区间近似，不是严格的双层
+   bootstrap。
+
+输出文件：
+
+    results/bootstrap_validation.csv          指标摘要
+    results/bootstrap_validation_records.csv  每次重抽样的逐项记录
+    figure/bootstrap_optimism.png             AUC 乐观性与检验斜率的分布直方图
+
+
+十四、第十二阶段：测试集预测和最终评价
 ----------------------------------------
 最终测试集共有 57 条样本。模型先生成：
 
@@ -443,7 +505,7 @@ XGBoost：n_estimators=100, max_depth=2, learning_rate=0.03
 AUC 和分类指标的置信区间使用测试集 bootstrap 计算，bootstrap 次数为 2000。
 
 
-十四、第十二阶段：三类最终评价图
+十五、第十三阶段：三类最终评价图
 ----------------------------------
 图形保存在 figure/ 文件夹中：
 
@@ -461,7 +523,7 @@ AUC 和分类指标的置信区间使用测试集 bootstrap 计算，bootstrap �
 DCA 的阈值范围应结合实际应用场景解释，不能为了曲线效果事后选择范围。
 
 
-十五、第十三阶段：SHAP 可解释性分析
+十六、第十四阶段：SHAP 可解释性分析
 ------------------------------------
 SHAP 只解释最终确定的 Logistic Regression，不用于重新选择模型或参数。
 
@@ -500,7 +562,7 @@ SHAP 结果首先在 One-Hot 后的特征空间产生。为了更容易写报告
 SHAP 的解释是模型关联解释，不代表医学因果关系。
 
 
-十六、期间主要修改过程
+十七、期间主要修改过程
 ----------------------
 1. 最初所有代码都集中在 understanding.py，包含读取、统计、绘图和检验。
 2. 建立 src/heart_disease 包，将数据读取、配置、预处理、模型、评价、解释分开。
@@ -519,9 +581,12 @@ SHAP 的解释是模型关联解释，不代表医学因果关系。
 14. 增加测试集 AUC、95% CI、分类指标、Brier、校准和 DCA。
 15. 增加 SHAP 三类图，并将图统一保存到 figure/。
 16. 最后补充四模型结果 CSV、SHAP 原始变量聚合、README 和基础测试。
+17. 增加 Bootstrap 乐观校正内部验证（训练集 1000 次重抽样、四个指标）、
+    乐观性分布图、结果 CSV 和对应单元测试，并更新 README 与项目报告。
 
 
-十七、当前需要注意的限制和后续改进
+
+十八、当前需要注意的限制和后续改进
 ------------------------------------
 1. 测试集只有 57 条样本，所有最终测试结果都可能不稳定，应作为探索性验证。
 
@@ -539,12 +604,16 @@ SHAP 的解释是模型关联解释，不代表医学因果关系。
 
 6. DCA 的阈值范围 0.05 到 0.80 需要结合实际场景说明。
 
-7. 还可以进一步增加外部验证、重复交叉验证、概率校准方法比较和更大独立测试集。
+7. 还可以进一步增加全策略嵌套 bootstrap（把模型选择纳入乐观校正）、外部验证、
+   重复交叉验证、概率校准方法比较和更大独立测试集。
 
 8. 可以继续添加 .gitignore，排除 __pycache__/、*.pyc 和临时文件。
 
+9. Bootstrap 乐观校正只覆盖选定模型的拟合过程（预处理 + 拟合），模型选择
+   （四选一）本身的乐观性未纳入，已在报告第十三节声明。
 
-十八、如何运行项目
+
+十九、如何运行项目
 ------------------
 安装依赖：
 
@@ -567,11 +636,12 @@ SHAP 的解释是模型关联解释，不代表医学因果关系。
 
 运行后查看：
 
-    figure/model evaluation and SHAP plots
-    results/model_comparison.csv
+    figure/  测试集评价图、Bootstrap 乐观分布图与 SHAP 图
+    results/ model_comparison.csv、bootstrap_validation.csv、
+             bootstrap_validation_records.csv
 
 
-十九、最终总结
+二十、最终总结
 --------------
 本项目最终采用的核心方案是：
 
@@ -582,6 +652,7 @@ SHAP 的解释是模型关联解释，不代表医学因果关系。
     -> 比较 Logistic、L1 Logistic、Random Forest、XGBoost
     -> 选择标准 Logistic Regression
     -> 用全部清理后的训练集重新拟合
+    -> 训练集 Bootstrap 乐观校正（AUC、Brier、校准斜率与截距）
     -> 测试集进行最终区分、分类、校准和 DCA 评价
     -> 使用 SHAP 解释最终 Logistic Regression
 

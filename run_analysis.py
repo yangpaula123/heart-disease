@@ -36,6 +36,11 @@ from heart_disease.evaluation import (
     plot_decision_curve,
     plot_roc_curve,
 )
+from heart_disease.bootstrap_validation import (
+    bootstrap_optimism_correction,
+    optimism_summary_table,
+    plot_optimism_distribution,
+)
 
 from heart_disease.explainability import (
     aggregate_shap_values,
@@ -128,6 +133,19 @@ def main():
     print("拟合样本数：", len(X_train))
     print("最终模型：", final_model.named_steps["model"])
 
+    print("\n=== Bootstrap 乐观校正内部验证（训练集） ===")
+    validation_result = bootstrap_optimism_correction(final_model, X_train, y_train)
+    validation_table = optimism_summary_table(validation_result)
+    print(f"有效重抽样次数：{validation_result['n_resamples']} / 1000")
+    print(validation_table.round(4).to_string(index=False))
+    validation_table.to_csv(RESULTS_DIR / "bootstrap_validation.csv", index=False)
+    validation_result["records"].to_csv(
+        RESULTS_DIR / "bootstrap_validation_records.csv",
+        index=False,
+    )
+    print("已保存：", RESULTS_DIR / "bootstrap_validation.csv")
+    print("已保存：", RESULTS_DIR / "bootstrap_validation_records.csv")
+
     print("\n=== 测试集最终评价 ===")
     evaluation_result = evaluate_model(final_model, X_test, y_test)
     print(f"ROC-AUC：{evaluation_result['auc']:.4f}")
@@ -163,6 +181,9 @@ def main():
         "decision_curve.png": plot_decision_curve(
             y_test,
             evaluation_result["probability"],
+        )[0],
+        "bootstrap_optimism.png": plot_optimism_distribution(
+            validation_result["records"],
         )[0],
     }
     for filename, figure in evaluation_figures.items():
